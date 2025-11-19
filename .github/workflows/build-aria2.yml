@@ -1,4 +1,4 @@
-name: Build Aria2 (Name Fix)
+name: Build Aria2 (Final Fix)
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   # ==========================================
-  # 任务 1: Linux 编译
+  # 任务 1: Linux 编译 (保持原样)
   # ==========================================
   build-linux:
     runs-on: ubuntu-latest
@@ -53,7 +53,7 @@ jobs:
         path: src/aria2c
 
   # ==========================================
-  # 任务 2: Windows 编译
+  # 任务 2: Windows 编译 (强力修复版)
   # ==========================================
   build-windows:
     runs-on: windows-latest
@@ -73,7 +73,7 @@ jobs:
       with:
         msystem: MINGW64
         update: true
-        # 下面这块必须是纯净的包名列表，不能包含注释
+        # 移除所有注释，保持纯净列表
         install: >-
           base-devel
           git
@@ -97,19 +97,21 @@ jobs:
         # 修复 gettext 版本
         sed -i 's/AM_GNU_GETTEXT_VERSION(\[0.19\])/AM_GNU_GETTEXT_VERSION([0.22])/' configure.ac
 
-        # 强力修复：从 configure.ac 中删除对 deps/wslay 的引用
+        # 删除 wslay 子模块引用，防止递归配置错误
         sed -i '/AC_CONFIG_SUBDIRS(\[deps\/wslay\])/d' configure.ac
 
     - name: Configure & Compile
       run: |
-        # 使用 -fiv 确保完全重新生成
+        # 强制重新生成配置脚本
         autoreconf -fiv
         
-        # 防止生成的文件包含 Windows CRLF 换行符导致 Shell 脚本语法错误
+        # 修复 Windows 换行符问题
         sed -i 's/\r$//' configure
 
-        # Windows 下使用 expat
-        STATIC_LIBS="$(pkg-config --static --libs libssh2 libcares openssl sqlite3 zlib expat)"
+        # [重点修正] 获取静态库依赖，并手动追加 Windows 系统库
+        # 很多时候静态编译失败是因为缺了 -lws2_32 -liphlpapi 等底层库
+        PKG_LIBS="$(pkg-config --static --libs libssh2 libcares openssl sqlite3 zlib expat)"
+        SYSTEM_LIBS="-lws2_32 -lsecur32 -lcrypt32 -liphlpapi -lshlwapi -lwsock32"
         
         ./configure \
           --host=x86_64-w64-mingw32 \
@@ -121,10 +123,8 @@ jobs:
           --with-openssl \
           --without-wslay \
           ARIA2_STATIC=yes \
-          CFLAGS="-static -I/mingw64/include" \
-          CXXFLAGS="-static -I/mingw64/include" \
-          LDFLAGS="-static -all-static -L/mingw64/lib" \
-          LIBS="$STATIC_LIBS"
+          LDFLAGS="-static" \
+          LIBS="$PKG_LIBS $SYSTEM_LIBS"
           
         make -j$(nproc)
         strip src/aria2c.exe
@@ -134,3 +134,9 @@ jobs:
       with:
         name: aria2c-windows
         path: src/aria2c.exe
+
+    # 如果还是失败，打印 config.log 以便排查
+    - name: Print config.log on failure
+      if: failure()
+      run: |
+        cat config.log
