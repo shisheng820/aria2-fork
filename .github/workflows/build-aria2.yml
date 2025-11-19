@@ -1,14 +1,16 @@
-name: Build Aria2 with Unlimited Connections
+name: Build Aria2 (Linux & Windows)
 
 on:
-  workflow_dispatch: # 允许手动点击按钮触发构建
+  workflow_dispatch: # 手动触发
   push:
     branches: [ master ]
 
 jobs:
-  build:
+  # ==================================================
+  # 任务 1: 编译 Linux 版本 (使用 Native 环境 + 补全依赖)
+  # ==================================================
+  build-linux:
     runs-on: ubuntu-latest
-    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -16,42 +18,74 @@ jobs:
         repository: aria2/aria2
         ref: master
 
-    - name: Install Dependencies
+    - name: Install Dependencies (Linux)
+      # 这里补全了你之前报错缺失的 liblzma, libgpg-error, libgcrypt, libcares 等
       run: |
         sudo apt-get update
-        sudo apt-get install -y libxml2-dev libcppunit-dev autoconf automake autotools-dev autopoint libtool pkg-config libsqlite3-dev libssh2-1-dev libc-ares-dev
+        sudo apt-get install -y \
+          libxml2-dev libcppunit-dev autoconf automake autotools-dev autopoint libtool pkg-config \
+          libsqlite3-dev libssh2-1-dev libc-ares-dev \
+          liblzma-dev libgpg-error-dev libgcrypt20-dev libssl-dev zlib1g-dev
 
     - name: Apply Patches (Unlock Limits)
       run: |
-        echo "Applying patches to OptionHandlerFactory.cc..."
-        
-        # 1. 解除最大连接数和分片数限制 (16 -> 65535)
-        # 解释：定位所有将范围设为 1~16 的整数选项，修改为 1~65535
+        echo "Applying patches..."
+        # 解除连接数限制 16 -> 65535
         sed -i 's/1, 16, /1, 65535, /g' src/OptionHandlerFactory.cc
-        
-        # 2. 解除最小分片大小限制 (1MB -> 1KB)
-        # 解释：定位 1_m (1MB) 的下限，修改为 1_k (1KB)
+        # 解除最小分片 1MB -> 1KB
         sed -i 's/1_m, 1_g, /1_k, 1_g, /g' src/OptionHandlerFactory.cc
-        
-        # 验证修改是否成功 (打印相关行)
-        echo "--- Verification ---"
-        grep -n "65535" src/OptionHandlerFactory.cc
-        grep -n "1_k" src/OptionHandlerFactory.cc
 
-    - name: Configure
+    - name: Configure & Compile (Linux)
       run: |
         autoreconf -i
-        # 这里使用静态链接配置，生成的二进制文件迁移性更好
+        # 静态链接，方便在不同 Linux 发行版运行
         ./configure --enable-static --disable-shared --with-libssh2 --with-ca-bundle='/etc/ssl/certs/ca-certificates.crt' ARIA2_STATIC=yes
+        make -j$(nproc)
+        strip src/aria2c
 
-    - name: Compile
-      run: make -j$(nproc)
-
-    - name: Strip Binary
-      run: strip src/aria2c
-
-    - name: Upload Artifact
+    - name: Upload Linux Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: aria2c-unlimited-linux-amd64
+        name: aria2c-linux
         path: src/aria2c
+
+  # ==================================================
+  # 任务 2: 编译 Windows 版本 (使用 Docker 容器)
+  # ==================================================
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        repository: aria2/aria2
+        ref: master
+
+    - name: Apply Patches (Unlock Limits)
+      # Windows 版同样需要打补丁
+      run: |
+        echo "Applying patches..."
+        sed -i 's/1, 16, /1, 65535, /g' src/OptionHandlerFactory.cc
+        sed -i 's/1_m, 1_g, /1_k, 1_g, /g' src/OptionHandlerFactory.cc
+
+    - name: Build Docker Image
+      # 对应教程中的：docker build -t aria2-mingw -f ./Dockerfile.mingw ./
+      run: docker build -t aria2-mingw -f Dockerfile.mingw .
+
+    - name: Compile in Docker
+      # 对应教程中的运行容器命令。
+      # 我们把所有命令串联起来，在容器内一次性执行完毕
+      run: |
+        docker run --rm -v $(pwd):/aria2 aria2-mingw /bin/sh -c "
+          cd /aria2 && \
+          autoreconf -i && \
+          ./mingw-config && \
+          make -j\$(nproc) && \
+          i686-w64-mingw32-strip src/aria2c.exe
+        "
+
+    - name: Upload Windows Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: aria2c-windows
+        path: src/aria2c.exe
