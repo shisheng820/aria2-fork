@@ -1,14 +1,14 @@
-name: Build Aria2 (Linux & Windows)
+name: Build Aria2 (Native No-Docker)
 
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:
   push:
     branches: [ master ]
 
 jobs:
-  # ==================================================
-  # 任务 1: 编译 Linux 版本 (使用 Native 环境 + 补全依赖)
-  # ==================================================
+  # ==========================================
+  # 任务 1: Linux 编译 (修复链接错误)
+  # ==========================================
   build-linux:
     runs-on: ubuntu-latest
     steps:
@@ -18,28 +18,34 @@ jobs:
         repository: aria2/aria2
         ref: master
 
-    - name: Install Dependencies (Linux)
-      # 这里补全了你之前报错缺失的 liblzma, libgpg-error, libgcrypt, libcares 等
+    - name: Install Dependencies
       run: |
         sudo apt-get update
+        # 安装所有必要的开发库
         sudo apt-get install -y \
-          libxml2-dev libcppunit-dev autoconf automake autotools-dev autopoint libtool pkg-config \
-          libsqlite3-dev libssh2-1-dev libc-ares-dev \
-          liblzma-dev libgpg-error-dev libgcrypt20-dev libssl-dev zlib1g-dev
+          build-essential libxml2-dev libcppunit-dev autoconf automake \
+          autotools-dev autopoint libtool pkg-config libsqlite3-dev \
+          libssh2-1-dev libc-ares-dev liblzma-dev libssl-dev zlib1g-dev
 
     - name: Apply Patches (Unlock Limits)
       run: |
         echo "Applying patches..."
-        # 解除连接数限制 16 -> 65535
         sed -i 's/1, 16, /1, 65535, /g' src/OptionHandlerFactory.cc
-        # 解除最小分片 1MB -> 1KB
         sed -i 's/1_m, 1_g, /1_k, 1_g, /g' src/OptionHandlerFactory.cc
 
-    - name: Configure & Compile (Linux)
+    - name: Configure & Compile
       run: |
         autoreconf -i
-        # 静态链接，方便在不同 Linux 发行版运行
-        ./configure --enable-static --disable-shared --with-libssh2 --with-ca-bundle='/etc/ssl/certs/ca-certificates.crt' ARIA2_STATIC=yes
+        # 关键修改：
+        # 1. 使用 ARIA2_STATIC=yes 配合标准 configure
+        # 2. 去掉了可能会导致路径混淆的复杂参数，依赖 pkg-config 自动发现
+        ./configure \
+          --enable-static \
+          --disable-shared \
+          --with-libssh2 \
+          --with-ca-bundle='/etc/ssl/certs/ca-certificates.crt' \
+          ARIA2_STATIC=yes
+          
         make -j$(nproc)
         strip src/aria2c
 
@@ -49,11 +55,15 @@ jobs:
         name: aria2c-linux
         path: src/aria2c
 
-  # ==================================================
-  # 任务 2: 编译 Windows 版本 (使用 Docker 容器)
-  # ==================================================
+  # ==========================================
+  # 任务 2: Windows 编译 (使用 MSYS2，抛弃 Docker)
+  # ==========================================
   build-windows:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0} # 强制使用 MSYS2 环境运行命令
+        
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -61,28 +71,53 @@ jobs:
         repository: aria2/aria2
         ref: master
 
+    - name: Setup MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: true
+        # 直接使用 pacman 安装预编译好的依赖，不再需要 curl 下载源码编译！
+        # 这样解决了 gmplib.org 超时的问题
+        install: >-
+          base-devel
+          git
+          mingw-w64-x86_64-toolchain
+          mingw-w64-x86_64-libssh2
+          mingw-w64-x86_64-c-ares
+          mingw-w64-x86_64-expat
+          mingw-w64-x86_64-sqlite3
+          mingw-w64-x86_64-zlib
+          mingw-w64-x86_64-cppunit
+          autotools
+          automake-wrapper
+          libtool
+
     - name: Apply Patches (Unlock Limits)
-      # Windows 版同样需要打补丁
       run: |
         echo "Applying patches..."
         sed -i 's/1, 16, /1, 65535, /g' src/OptionHandlerFactory.cc
         sed -i 's/1_m, 1_g, /1_k, 1_g, /g' src/OptionHandlerFactory.cc
 
-    - name: Build Docker Image
-      # 对应教程中的：docker build -t aria2-mingw -f ./Dockerfile.mingw ./
-      run: docker build -t aria2-mingw -f Dockerfile.mingw .
-
-    - name: Compile in Docker
-      # 对应教程中的运行容器命令。
-      # 我们把所有命令串联起来，在容器内一次性执行完毕
+    - name: Configure & Compile
       run: |
-        docker run --rm -v $(pwd):/aria2 aria2-mingw /bin/sh -c "
-          cd /aria2 && \
-          autoreconf -i && \
-          ./mingw-config && \
-          make -j\$(nproc) && \
-          i686-w64-mingw32-strip src/aria2c.exe
-        "
+        autoreconf -i
+        
+        # 针对 Windows 的配置
+        # 使用 pkg-config 自动查找我们刚才用 pacman 安装的库
+        ./configure \
+          --host=x86_64-w64-mingw32 \
+          --enable-static \
+          --disable-shared \
+          --with-libssh2 \
+          --with-sqlite3 \
+          --without-gnutls \
+          --with-openssl \
+          ARIA2_STATIC=yes
+          
+        make -j$(nproc)
+        
+        # 剥离符号表减小体积
+        strip src/aria2c.exe
 
     - name: Upload Windows Artifact
       uses: actions/upload-artifact@v4
