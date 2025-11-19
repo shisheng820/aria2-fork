@@ -1,4 +1,4 @@
-name: Build Aria2 (Final Fix)
+name: Build Aria2 (Fixed Ultimate)
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   # ==========================================
-  # 任务 1: Linux 编译 (修复链接器找不到库的问题)
+  # 任务 1: Linux 编译 (使用 pkg-config 自动处理静态依赖)
   # ==========================================
   build-linux:
     runs-on: ubuntu-latest
@@ -21,7 +21,6 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt-get update
-        # 安装基础编译工具和所有依赖库
         sudo apt-get install -y \
           build-essential libxml2-dev libcppunit-dev autoconf automake \
           autotools-dev autopoint libtool pkg-config libsqlite3-dev \
@@ -36,16 +35,18 @@ jobs:
     - name: Configure & Compile
       run: |
         autoreconf -i
-        # 关键修复点：
-        # 显式添加 LIBS="-lgpg-error -lcares -lz"
-        # 这会强制连接器把这些找不到的库链接进去，解决 cannot find -lgpg-error 报错
+        
+        # 使用 pkg-config 获取精确的静态依赖库路径和参数
+        # 这能自动解决 "cannot find -lgpg-error" 等依赖链问题
+        STATIC_LIBS="$(pkg-config --static --libs libssh2 libc-ares libssl libcrypto zlib sqlite3 libxml-2.0)"
+        
         ./configure \
           --enable-static \
           --disable-shared \
           --with-libssh2 \
           --with-ca-bundle='/etc/ssl/certs/ca-certificates.crt' \
           ARIA2_STATIC=yes \
-          LIBS="-lgpg-error -lcares -lz"
+          LIBS="$STATIC_LIBS"
           
         make -j$(nproc)
         strip src/aria2c
@@ -57,7 +58,7 @@ jobs:
         path: src/aria2c
 
   # ==========================================
-  # 任务 2: Windows 编译 (修复 autopoint 版本报错)
+  # 任务 2: Windows 编译 (禁用 wslay 避开语法错误)
   # ==========================================
   build-windows:
     runs-on: windows-latest
@@ -87,27 +88,28 @@ jobs:
           mingw-w64-x86_64-sqlite3
           mingw-w64-x86_64-zlib
           mingw-w64-x86_64-cppunit
+          mingw-w64-x86_64-openssl
           autotools
           automake-wrapper
           libtool
           gettext-devel
 
-    - name: Apply Patches & Fix Version Mismatch
+    - name: Apply Patches & Fix Version
       run: |
-        # 1. 修改源代码限制
+        # 解除限制
         sed -i 's/1, 16, /1, 65535, /g' src/OptionHandlerFactory.cc
         sed -i 's/1_m, 1_g, /1_k, 1_g, /g' src/OptionHandlerFactory.cc
         
-        # 2. 关键修复点：修改 configure.ac 中的 gettext 版本
-        # 原代码请求 0.19，MSYS2 环境是 0.22+，导致 autopoint 报错
-        # 我们将其修改为匹配当前环境的 0.22
-        echo "Fixing gettext version mismatch..."
+        # 修复 gettext 版本不匹配 (0.19 -> 0.22)
         sed -i 's/AM_GNU_GETTEXT_VERSION(\[0.19\])/AM_GNU_GETTEXT_VERSION([0.22])/' configure.ac
 
     - name: Configure & Compile
       run: |
         autoreconf -i
         
+        # 关键修改：
+        # 1. --without-wslay: 彻底解决 configure syntax error 问题
+        # 2. 使用 pkg-config 处理 Windows 下的静态库依赖
         ./configure \
           --host=x86_64-w64-mingw32 \
           --enable-static \
@@ -116,7 +118,10 @@ jobs:
           --with-sqlite3 \
           --without-gnutls \
           --with-openssl \
-          ARIA2_STATIC=yes
+          --without-wslay \
+          ARIA2_STATIC=yes \
+          LDFLAGS="-static -all-static" \
+          LIBS="$(pkg-config --static --libs libssh2 libc-ares openssl sqlite3 zlib expat)"
           
         make -j$(nproc)
         strip src/aria2c.exe
