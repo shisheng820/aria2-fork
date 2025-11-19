@@ -58,7 +58,7 @@ jobs:
         path: src/aria2c
 
   # ==========================================
-  # 任务 2: Windows 编译
+  # 任务 2: Windows 编译 (已修正 C 编译器错误)
   # ==========================================
   build-windows:
     runs-on: windows-latest
@@ -120,7 +120,11 @@ jobs:
           --with-openssl \
           --without-wslay \
           ARIA2_STATIC=yes \
-          LDFLAGS="-static -all-static" \
+          # **** 修正 C 编译器无法创建可执行文件错误的关键修改 ****
+          CFLAGS="-static -I/mingw64/include" \
+          CXXFLAGS="-static -I/mingw64/include" \
+          LDFLAGS="-static -all-static -L/mingw64/lib" \
+          # ******************************************************
           LIBS="$STATIC_LIBS"
           
         make -j$(nproc)
