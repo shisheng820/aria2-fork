@@ -1,0 +1,119 @@
+name: Build Aria2 Windows (Unlimited Threads)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+        
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        repository: aria2/aria2
+        ref: master
+
+    # ============================================================
+    # 1. 环境搭建：基于 MSYS2 (参考文章2的思路，但自动化安装依赖)
+    # ============================================================
+    - name: Setup MSYS2 & Install Dependencies
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: true
+        # 直接安装预编译好的依赖库，比文章2中的手动源码编译更稳定、更快
+        install: >-
+          base-devel
+          git
+          mingw-w64-x86_64-toolchain
+          mingw-w64-x86_64-libssh2
+          mingw-w64-x86_64-c-ares
+          mingw-w64-x86_64-expat
+          mingw-w64-x86_64-sqlite3
+          mingw-w64-x86_64-zlib
+          mingw-w64-x86_64-openssl
+          mingw-w64-x86_64-gmp
+          mingw-w64-x86_64-wslay
+          autotools
+          automake-wrapper
+          libtool
+          gettext-devel
+
+    # ============================================================
+    # 2. 解除限制 Patch (参考文章1的 aria2-fast.patch 逻辑)
+    # ============================================================
+    - name: Apply "Unlimited" Patch
+      run: |
+        # 1. 修改最大连接数限制 (原版限制 16)
+        # 将 1, 16 替换为 1, 128 (甚至可以设为 -1 表示无限制，但建议设个大数值)
+        sed -i 's/"1", 1, 16,/"1", 1, 128,/g' src/OptionHandlerFactory.cc
+        sed -i 's/"s", 1, 16,/"s", 1, 128,/g' src/OptionHandlerFactory.cc
+        sed -i 's/"x", 1, 16,/"x", 1, 128,/g' src/OptionHandlerFactory.cc
+        sed -i 's/"j", 1, 16,/"j", 1, 128,/g' src/OptionHandlerFactory.cc
+
+        # 2. 修改最小分片大小 (原版限制 1M)
+        # 将 1_m 改为 1_k (1KB)，允许更细粒度的分片
+        sed -i 's/1_m, 1_g,/1_k, 1_g,/g' src/OptionHandlerFactory.cc
+
+        # 3. 修复 configure.ac 版本号问题 (修复构建报错)
+        sed -i 's/AM_GNU_GETTEXT_VERSION(\[0.19\])/AM_GNU_GETTEXT_VERSION([0.22])/' configure.ac
+        
+        # 4. 移除内部 wslay 模块引用 (防止 make 递归错误)
+        sed -i '/AC_CONFIG_SUBDIRS(\[deps\/wslay\])/d' configure.ac
+        sed -i 's/ wslay//g' deps/Makefile.am
+
+    # ============================================================
+    # 3. 配置与编译 (结合两篇文章的编译参数)
+    # ============================================================
+    - name: Configure & Compile
+      run: |
+        # 重新生成构建脚本
+        autoreconf -fiv
+        sed -i 's/\r$//' configure
+
+        # 获取静态库链接参数
+        # 注意：顺序很重要，越底层的库越往后放
+        PKG_LIBS="$(pkg-config --static --libs libssh2 libcares openssl sqlite3 zlib expat libwslay gmp)"
+        
+        # 手动补充 Windows 系统库 (静态链接必须)
+        # 参考文章1中 LIBS="-lws2_32" 的做法，但这里需要更多
+        SYSTEM_LIBS="-lws2_32 -lsecur32 -lcrypt32 -liphlpapi -lshlwapi -lwsock32 -lgdi32"
+
+        echo "开始配置..."
+        ./configure \
+          --host=x86_64-w64-mingw32 \
+          --prefix=/mingw64 \
+          --enable-static \
+          --disable-shared \
+          --with-libssh2 \
+          --with-sqlite3 \
+          --with-openssl \
+          --with-libexpat \
+          --with-libgmp \
+          --with-libcares \
+          --without-gnutls \
+          --without-libxml2 \
+          ARIA2_STATIC=yes \
+          LDFLAGS="-static -s" \
+          LIBS="$PKG_LIBS $SYSTEM_LIBS"
+
+        echo "开始编译..."
+        make -j$(nproc)
+        
+        # 验证生成的文件
+        ls -lh src/aria2c.exe
+
+    # ============================================================
+    # 4. 上传产物
+    # ============================================================
+    - name: Upload Windows Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: aria2c-windows-unlimited
+        path: src/aria2c.exe
