@@ -1,4 +1,4 @@
-name: Build Aria2 (Fixed Ultimate)
+name: Build Aria2 (Name Fix)
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   # ==========================================
-  # 任务 1: Linux 编译 (使用 pkg-config 自动处理静态依赖)
+  # 任务 1: Linux 编译
   # ==========================================
   build-linux:
     runs-on: ubuntu-latest
@@ -27,7 +27,7 @@ jobs:
           libssh2-1-dev libc-ares-dev liblzma-dev libgpg-error-dev \
           libgcrypt20-dev libssl-dev zlib1g-dev
 
-    - name: Apply Patches (Unlock Limits)
+    - name: Apply Patches
       run: |
         sed -i 's/1, 16, /1, 65535, /g' src/OptionHandlerFactory.cc
         sed -i 's/1_m, 1_g, /1_k, 1_g, /g' src/OptionHandlerFactory.cc
@@ -36,9 +36,9 @@ jobs:
       run: |
         autoreconf -i
         
-        # 使用 pkg-config 获取精确的静态依赖库路径和参数
-        # 这能自动解决 "cannot find -lgpg-error" 等依赖链问题
-        STATIC_LIBS="$(pkg-config --static --libs libssh2 libc-ares libssl libcrypto zlib sqlite3 libxml-2.0)"
+        # 修正点：将 libc-ares 改为 libcares
+        # 同时显式列出 libgcrypt 和 libgpg-error 以防万一
+        STATIC_LIBS="$(pkg-config --static --libs libssh2 libcares libssl libcrypto zlib sqlite3 libxml-2.0)"
         
         ./configure \
           --enable-static \
@@ -58,7 +58,7 @@ jobs:
         path: src/aria2c
 
   # ==========================================
-  # 任务 2: Windows 编译 (禁用 wslay 避开语法错误)
+  # 任务 2: Windows 编译
   # ==========================================
   build-windows:
     runs-on: windows-latest
@@ -96,20 +96,20 @@ jobs:
 
     - name: Apply Patches & Fix Version
       run: |
-        # 解除限制
         sed -i 's/1, 16, /1, 65535, /g' src/OptionHandlerFactory.cc
         sed -i 's/1_m, 1_g, /1_k, 1_g, /g' src/OptionHandlerFactory.cc
         
-        # 修复 gettext 版本不匹配 (0.19 -> 0.22)
+        # 修复 gettext 版本
         sed -i 's/AM_GNU_GETTEXT_VERSION(\[0.19\])/AM_GNU_GETTEXT_VERSION([0.22])/' configure.ac
 
     - name: Configure & Compile
       run: |
         autoreconf -i
         
-        # 关键修改：
-        # 1. --without-wslay: 彻底解决 configure syntax error 问题
-        # 2. 使用 pkg-config 处理 Windows 下的静态库依赖
+        # 修正点：将 libc-ares 改为 libcares
+        # Windows 下使用 expat 而不是 libxml2 (Aria2 默认偏好)
+        STATIC_LIBS="$(pkg-config --static --libs libssh2 libcares openssl sqlite3 zlib expat)"
+        
         ./configure \
           --host=x86_64-w64-mingw32 \
           --enable-static \
@@ -121,7 +121,7 @@ jobs:
           --without-wslay \
           ARIA2_STATIC=yes \
           LDFLAGS="-static -all-static" \
-          LIBS="$(pkg-config --static --libs libssh2 libc-ares openssl sqlite3 zlib expat)"
+          LIBS="$STATIC_LIBS"
           
         make -j$(nproc)
         strip src/aria2c.exe
