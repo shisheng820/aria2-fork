@@ -7,7 +7,7 @@ on:
 
 jobs:
   # ==========================================
-  # 任务 1: Linux 编译 (保持不变)
+  # 任务 1: Linux 编译
   # ==========================================
   build-linux:
     runs-on: ubuntu-latest
@@ -53,7 +53,7 @@ jobs:
         path: src/aria2c
 
   # ==========================================
-  # 任务 2: Windows 编译 (修复语法错误与依赖)
+  # 任务 2: Windows 编译
   # ==========================================
   build-windows:
     runs-on: windows-latest
@@ -73,6 +73,7 @@ jobs:
       with:
         msystem: MINGW64
         update: true
+        # 下面这块必须是纯净的包名列表，不能包含注释
         install: >-
           base-devel
           git
@@ -87,7 +88,6 @@ jobs:
           automake-wrapper
           libtool
           gettext-devel
-          # [FIX 1] 移除了 cppunit 依赖，避免触发导致语法错误的检测逻辑
 
     - name: Apply Patches & Fix Version
       run: |
@@ -97,16 +97,15 @@ jobs:
         # 修复 gettext 版本
         sed -i 's/AM_GNU_GETTEXT_VERSION(\[0.19\])/AM_GNU_GETTEXT_VERSION([0.22])/' configure.ac
 
-        # [FIX 2] 强力修复：从 configure.ac 中删除对 deps/wslay 的引用
-        # 即使使用了 --without-wslay，autoreconf 仍可能尝试配置子目录，导致失败。直接删掉这行最保险。
+        # 强力修复：从 configure.ac 中删除对 deps/wslay 的引用
         sed -i '/AC_CONFIG_SUBDIRS(\[deps\/wslay\])/d' configure.ac
 
     - name: Configure & Compile
       run: |
-        # [FIX 3] 使用 -fiv (force, install, verbose) 确保完全重新生成
+        # 使用 -fiv 确保完全重新生成
         autoreconf -fiv
         
-        # [FIX 4] 防止生成的文件包含 Windows CRLF 换行符导致 Shell 脚本语法错误
+        # 防止生成的文件包含 Windows CRLF 换行符导致 Shell 脚本语法错误
         sed -i 's/\r$//' configure
 
         # Windows 下使用 expat
