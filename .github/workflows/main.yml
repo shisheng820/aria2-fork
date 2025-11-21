@@ -1,0 +1,160 @@
+name: Build Aria2 Windows (Docker Logic / Unlimited)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+
+jobs:
+  build-cross-compile:
+    runs-on: ubuntu-latest
+    env:
+      # 这里定义目标架构，x86_64-w64-mingw32 是 64位，i686-w64-mingw32 是 32位
+      # 现在的电脑基本都用 64位，所以默认改为了 64位
+      HOST: x86_64-w64-mingw32
+      
+    steps:
+    - name: Checkout Aria2 Source
+      uses: actions/checkout@v4
+      with:
+        repository: aria2/aria2
+        ref: master
+
+    # ==========================================
+    # 1. 安装基础编译工具 (对应 Dockerfile 的 apt-get)
+    # ==========================================
+    - name: Install Build Tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          make binutils autoconf automake autotools-dev libtool \
+          patch ca-certificates pkg-config git curl dpkg-dev \
+          gcc-mingw-w64 g++-mingw-w64 autopoint libcppunit-dev \
+          libxml2-dev libgcrypt20-dev lzip python3-docutils
+
+    # ==========================================
+    # 2. 编译依赖库 (对应 Dockerfile 的依赖编译部分)
+    #    完全按照 Dockerfile 的版本和参数进行交叉编译
+    # ==========================================
+    - name: Compile Dependencies (GMP, Expat, Sqlite, Zlib, C-Ares, SSH2)
+      run: |
+        # 创建工作目录
+        mkdir -p deps
+        cd deps
+        
+        # 1. GMP
+        curl -L -O https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz
+        tar xf gmp-6.3.0.tar.xz
+        cd gmp-6.3.0
+        ./configure --disable-shared --enable-static --prefix=/usr/local/$HOST --host=$HOST --disable-cxx --enable-fat CFLAGS="-mtune=generic -O2 -g0"
+        make -j$(nproc) install
+        cd ..
+
+        # 2. Expat
+        curl -L -O https://github.com/libexpat/libexpat/releases/download/R_2_5_0/expat-2.5.0.tar.bz2
+        tar xf expat-2.5.0.tar.bz2
+        cd expat-2.5.0
+        ./configure --disable-shared --enable-static --prefix=/usr/local/$HOST --host=$HOST --build=`dpkg-architecture -qDEB_BUILD_GNU_TYPE`
+        make -j$(nproc) install
+        cd ..
+
+        # 3. Sqlite3
+        curl -L -O https://www.sqlite.org/2023/sqlite-autoconf-3430100.tar.gz
+        tar xf sqlite-autoconf-3430100.tar.gz
+        cd sqlite-autoconf-3430100
+        ./configure --disable-shared --enable-static --prefix=/usr/local/$HOST --host=$HOST --build=`dpkg-architecture -qDEB_BUILD_GNU_TYPE`
+        make -j$(nproc) install
+        cd ..
+
+        # 4. Zlib
+        curl -L -O https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
+        tar xf zlib-1.3.1.tar.gz
+        cd zlib-1.3.1
+        CC=$HOST-gcc AR=$HOST-ar LD=$HOST-ld RANLIB=$HOST-ranlib STRIP=$HOST-strip ./configure --prefix=/usr/local/$HOST --libdir=/usr/local/$HOST/lib --includedir=/usr/local/$HOST/include --static
+        make -j$(nproc) install
+        cd ..
+
+        # 5. C-Ares
+        curl -L -O https://github.com/c-ares/c-ares/releases/download/cares-1_19_1/c-ares-1.19.1.tar.gz
+        tar xf c-ares-1.19.1.tar.gz
+        cd c-ares-1.19.1
+        ./configure --disable-shared --enable-static --without-random --prefix=/usr/local/$HOST --host=$HOST --build=`dpkg-architecture -qDEB_BUILD_GNU_TYPE` LIBS="-lws2_32"
+        make -j$(nproc) install
+        cd ..
+
+        # 6. LibSSH2
+        curl -L -O https://libssh2.org/download/libssh2-1.11.0.tar.bz2
+        tar xf libssh2-1.11.0.tar.bz2
+        cd libssh2-1.11.0
+        ./configure --disable-shared --enable-static --prefix=/usr/local/$HOST --host=$HOST --build=`dpkg-architecture -qDEB_BUILD_GNU_TYPE` LIBS="-lws2_32"
+        make -j$(nproc) install
+        cd ..
+
+    # ==========================================
+    # 3. 修改源代码 (复刻教程中的修改逻辑)
+    # ==========================================
+    - name: Patch Aria2 Source (Unlock Limits)
+      run: |
+        echo "正在修改 OptionHandlerFactory.cc ..."
+        
+        # 修改点 1: 最大连接数 (Max Connection Per Server)
+        # 原版: "1", 1, 16
+        # 修改: "128", 1, -1 (默认128，上限无限制)
+        sed -i 's/"1", 1, 16,/"128", 1, -1,/g' src/OptionHandlerFactory.cc
+        # 针对其他协议的类似限制也一并修改
+        sed -i 's/"s", 1, 16,/"s", 1, 128,/g' src/OptionHandlerFactory.cc
+        sed -i 's/"x", 1, 16,/"x", 1, 128,/g' src/OptionHandlerFactory.cc
+        sed -i 's/"j", 1, 16,/"j", 1, 128,/g' src/OptionHandlerFactory.cc
+        
+        # 修改点 2: 最小分片大小 (Min Split Size)
+        # 原版: "20M", 1_m, 1_g
+        # 修改: "1M", 1_k, 1_g (默认1M，最小允许1K)
+        sed -i 's/"20M", 1_m, 1_g/"1M", 1_k, 1_g/g' src/OptionHandlerFactory.cc
+        
+        # 修改点 3: 单任务默认线程数 (Split)
+        # 原版: "5", 1, -1
+        # 修改: "32", 1, -1 (默认32线程)
+        sed -i 's/"5", 1, -1,/"32", 1, -1,/g' src/OptionHandlerFactory.cc
+
+        # 修复 configure.ac 版本号问题 (常见报错修复)
+        sed -i 's/AM_GNU_GETTEXT_VERSION(\[0.19\])/AM_GNU_GETTEXT_VERSION([0.22])/' configure.ac
+
+    # ==========================================
+    # 4. 编译 Aria2
+    # ==========================================
+    - name: Configure & Compile Aria2
+      run: |
+        # 确保 pkg-config 能找到刚才编译安装的库
+        export PKG_CONFIG_PATH="/usr/local/$HOST/lib/pkgconfig"
+        
+        autoreconf -i
+        
+        # 使用 Dockerfile 中的 mingw-config 逻辑，但显式写出以确保透明
+        ./configure \
+            --host=$HOST \
+            --prefix=/usr/local/$HOST \
+            --disable-nls \
+            --enable-static \
+            --disable-shared \
+            --with-libssh2 \
+            --with-ca-bundle='/etc/ssl/certs/ca-certificates.crt' \
+            ARIA2_STATIC=yes \
+            LDFLAGS="-static -s" \
+            LIBS="-lws2_32"
+            
+        make -j$(nproc)
+        
+        # strip 减小体积
+        $HOST-strip src/aria2c.exe
+        
+        # 验证文件
+        ls -lh src/aria2c.exe
+
+    # ==========================================
+    # 5. 上传成品
+    # ==========================================
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: aria2c-windows-unlimited
+        path: src/aria2c.exe
