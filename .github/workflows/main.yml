@@ -31,28 +31,23 @@ jobs:
           libxml2-dev libgcrypt20-dev lzip python3-docutils
 
     # ==========================================
-    # 2. 准备目录权限 (解决之前的 Permission denied)
+    # 2. 准备目录权限
     # ==========================================
     - name: Prepare Target Directory Permissions
       run: |
-        # 创建安装目录并将所有权交给当前 runner 用户
         sudo mkdir -p /usr/local/$HOST
         sudo chown -R $(whoami) /usr/local/$HOST
 
-# ==========================================
-    # 3. 编译依赖库 (增加重试机制和超时设置)
+    # ==========================================
+    # 3. 编译依赖库 (带重试机制)
     # ==========================================
     - name: Compile Dependencies
       run: |
         mkdir -p deps
         cd deps
-        
-        # 定义通用的下载参数: 
-        # -f (失败报错) -L (跟随跳转) -O (保存文件) --retry 5 (重试5次) 
-        # --retry-delay 10 (间隔10秒) --connect-timeout 30 (连接超时30秒)
         CURL_ARGS="-f -L -O --retry 5 --retry-delay 10 --connect-timeout 30"
         
-        # 1. GMP (更换为更稳定的 GNU 官方源)
+        # 1. GMP
         echo "Downloading & Compiling GMP..."
         curl $CURL_ARGS https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
         tar xf gmp-6.3.0.tar.xz
@@ -106,39 +101,31 @@ jobs:
         make -j$(nproc) install
         cd ..
 
-        
     # ==========================================
-    # 4. 修改源代码 (已移除导致报错的 gettext 修改)
+    # 4. 修改源代码 (解除限制)
     # ==========================================
     - name: Patch Aria2 Source
       run: |
         echo "正在修改 OptionHandlerFactory.cc ..."
-        
-        # 修改点 1: 最大连接数 (16 -> 无限制/128)
         sed -i 's/"1", 1, 16,/"128", 1, -1,/g' src/OptionHandlerFactory.cc
         sed -i 's/"s", 1, 16,/"s", 1, 128,/g' src/OptionHandlerFactory.cc
         sed -i 's/"x", 1, 16,/"x", 1, 128,/g' src/OptionHandlerFactory.cc
         sed -i 's/"j", 1, 16,/"j", 1, 128,/g' src/OptionHandlerFactory.cc
-        
-        # 修改点 2: 最小分片大小 (1M -> 1K)
         sed -i 's/"20M", 1_m, 1_g/"1M", 1_k, 1_g/g' src/OptionHandlerFactory.cc
-        
-        # 修改点 3: 默认线程数 (5 -> 32)
         sed -i 's/"5", 1, -1,/"32", 1, -1,/g' src/OptionHandlerFactory.cc
 
-        # [FIXED] 删除了之前那行修改 AM_GNU_GETTEXT_VERSION 的命令
-        # Ubuntu 22.04 的 gettext 是 0.21，如果不去动 configure.ac (默认要求0.19)，它能兼容运行。
-        # 之前强制改为 0.22 导致了版本不匹配错误。
-
     # ==========================================
-    # 5. 编译 Aria2
+    # 5. 编译 Aria2 (关键修正: 禁用 Libxml2, 强制链接路径)
     # ==========================================
     - name: Configure & Compile Aria2
       run: |
         export PKG_CONFIG_PATH="/usr/local/$HOST/lib/pkgconfig"
         
-        # 强制更新配置脚本以适应当前环境
         autoreconf -fi
+        
+        # [FIX] 1. --without-libxml2: 防止引用系统头文件导致 iconv 错误
+        # [FIX] 2. --with-libexpat: 强制使用我们编译的 Expat
+        # [FIX] 3. LDFLAGS/CPPFLAGS: 显式指定路径，确保 configure 能检测到 GMP 等库
         
         ./configure \
             --host=$HOST \
@@ -146,10 +133,16 @@ jobs:
             --disable-nls \
             --enable-static \
             --disable-shared \
+            --without-libxml2 \
+            --with-libexpat \
+            --with-libgmp \
             --with-libssh2 \
+            --with-sqlite3 \
+            --with-libcares \
             --with-ca-bundle='/etc/ssl/certs/ca-certificates.crt' \
             ARIA2_STATIC=yes \
-            LDFLAGS="-static -s" \
+            CPPFLAGS="-I/usr/local/$HOST/include" \
+            LDFLAGS="-L/usr/local/$HOST/lib -static -s" \
             LIBS="-lws2_32"
             
         make -j$(nproc)
