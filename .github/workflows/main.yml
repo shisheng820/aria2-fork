@@ -39,16 +39,22 @@ jobs:
         sudo mkdir -p /usr/local/$HOST
         sudo chown -R $(whoami) /usr/local/$HOST
 
-    # ==========================================
-    # 3. 编译依赖库 (保持不变，之前已验证成功)
+# ==========================================
+    # 3. 编译依赖库 (增加重试机制和超时设置)
     # ==========================================
     - name: Compile Dependencies
       run: |
         mkdir -p deps
         cd deps
         
-        # 1. GMP
-        curl -L -O https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz
+        # 定义通用的下载参数: 
+        # -f (失败报错) -L (跟随跳转) -O (保存文件) --retry 5 (重试5次) 
+        # --retry-delay 10 (间隔10秒) --connect-timeout 30 (连接超时30秒)
+        CURL_ARGS="-f -L -O --retry 5 --retry-delay 10 --connect-timeout 30"
+        
+        # 1. GMP (更换为更稳定的 GNU 官方源)
+        echo "Downloading & Compiling GMP..."
+        curl $CURL_ARGS https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
         tar xf gmp-6.3.0.tar.xz
         cd gmp-6.3.0
         ./configure --disable-shared --enable-static --prefix=/usr/local/$HOST --host=$HOST --disable-cxx --enable-fat CFLAGS="-mtune=generic -O2 -g0"
@@ -56,7 +62,8 @@ jobs:
         cd ..
 
         # 2. Expat
-        curl -L -O https://github.com/libexpat/libexpat/releases/download/R_2_5_0/expat-2.5.0.tar.bz2
+        echo "Downloading & Compiling Expat..."
+        curl $CURL_ARGS https://github.com/libexpat/libexpat/releases/download/R_2_5_0/expat-2.5.0.tar.bz2
         tar xf expat-2.5.0.tar.bz2
         cd expat-2.5.0
         ./configure --disable-shared --enable-static --prefix=/usr/local/$HOST --host=$HOST --build=`dpkg-architecture -qDEB_BUILD_GNU_TYPE`
@@ -64,7 +71,8 @@ jobs:
         cd ..
 
         # 3. Sqlite3
-        curl -L -O https://www.sqlite.org/2023/sqlite-autoconf-3430100.tar.gz
+        echo "Downloading & Compiling Sqlite3..."
+        curl $CURL_ARGS https://www.sqlite.org/2023/sqlite-autoconf-3430100.tar.gz
         tar xf sqlite-autoconf-3430100.tar.gz
         cd sqlite-autoconf-3430100
         ./configure --disable-shared --enable-static --prefix=/usr/local/$HOST --host=$HOST --build=`dpkg-architecture -qDEB_BUILD_GNU_TYPE`
@@ -72,7 +80,8 @@ jobs:
         cd ..
 
         # 4. Zlib
-        curl -L -O https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
+        echo "Downloading & Compiling Zlib..."
+        curl $CURL_ARGS https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
         tar xf zlib-1.3.1.tar.gz
         cd zlib-1.3.1
         CC=$HOST-gcc AR=$HOST-ar LD=$HOST-ld RANLIB=$HOST-ranlib STRIP=$HOST-strip ./configure --prefix=/usr/local/$HOST --libdir=/usr/local/$HOST/lib --includedir=/usr/local/$HOST/include --static
@@ -80,7 +89,8 @@ jobs:
         cd ..
 
         # 5. C-Ares
-        curl -L -O https://github.com/c-ares/c-ares/releases/download/cares-1_19_1/c-ares-1.19.1.tar.gz
+        echo "Downloading & Compiling C-Ares..."
+        curl $CURL_ARGS https://github.com/c-ares/c-ares/releases/download/cares-1_19_1/c-ares-1.19.1.tar.gz
         tar xf c-ares-1.19.1.tar.gz
         cd c-ares-1.19.1
         ./configure --disable-shared --enable-static --without-random --prefix=/usr/local/$HOST --host=$HOST --build=`dpkg-architecture -qDEB_BUILD_GNU_TYPE` LIBS="-lws2_32"
@@ -88,13 +98,15 @@ jobs:
         cd ..
 
         # 6. LibSSH2
-        curl -L -O https://libssh2.org/download/libssh2-1.11.0.tar.bz2
+        echo "Downloading & Compiling LibSSH2..."
+        curl $CURL_ARGS https://libssh2.org/download/libssh2-1.11.0.tar.bz2
         tar xf libssh2-1.11.0.tar.bz2
         cd libssh2-1.11.0
         ./configure --disable-shared --enable-static --prefix=/usr/local/$HOST --host=$HOST --build=`dpkg-architecture -qDEB_BUILD_GNU_TYPE` LIBS="-lws2_32"
         make -j$(nproc) install
         cd ..
 
+        
     # ==========================================
     # 4. 修改源代码 (已移除导致报错的 gettext 修改)
     # ==========================================
